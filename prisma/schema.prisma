@@ -1,0 +1,1118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==========================================
+// 1. IDENTITY & RBAC
+// ==========================================
+
+enum UserStatus {
+  PENDING_SIGNUP
+  APPLICATION_DRAFT
+  PENDING
+  RETURNED
+  INVITED
+  ACTIVE
+  DEACTIVATED
+  BANNED
+  PERMANENTLY_REJECTED
+  WITHDRAWN
+}
+
+enum GraduationStatus {
+  CURRENTLY_ENROLLED
+  GRADUATED
+  NOT_APPLICABLE
+}
+
+model User {
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  passwordHash       String?
+  status             UserStatus          @default(ACTIVE)
+  emailVerifiedAt    DateTime?
+  lastActiveAt       DateTime?
+  signupIp           String?
+  signupCountry      String?
+  twoFactorRequired  Boolean             @default(false)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  profile            UserProfile?
+  roles              UserRole[]
+  sessions           Session[]
+  twoFactor          TwoFactor?
+  invitesSent        Invite[]            @relation("InvitesCreatedBy")
+  invitesReceived    Invite[]            @relation("InvitesForUser")
+  applications       Application[]
+  authoredContent    ContentAuthor[]
+  createdVersions    ContentVersion[]
+  assignedReviews    ReviewAssignment[]
+  editorialComments  EditorialComment[]
+  createdCorrections Correction[]
+  updateRequests     UpdateRequest[]
+  decisionsMade      EditorialDecision[]
+  featuredCreated    FeaturedPlacement[]
+  notifications      Notification[]
+  activityLogs       ActivityLog[]
+  inboxNotes         InboxNote[]
+  inboxReplies       InboxReply[]
+  cmsRevisions       CmsRevision[]
+  applicationDecisions ApplicationDecision[]
+
+  @@index([status])
+  @@index([email])
+}
+
+model UserProfile {
+  userId               String            @id
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName            String
+  lastName             String
+  displayName          String?
+  username             String            @unique
+  avatarUrl            String?
+  designation          String
+  institution          String?
+  department           String?
+  programme            String?
+  graduationStatus     GraduationStatus?
+  graduationYear       Int?
+  registrationNumber   String?
+  orcid                String?
+  shortBio             String?
+  links                Json?             // array of { platform, url }
+  expertiseCategoryIds Json?             // array of category IDs
+  showPublicProfile    Boolean           @default(true)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  description String
+  isSystem    Boolean          @default(false)
+  chipColour  String           @default("green")
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  key         String           @id
+  group       String
+  description String
+
+  roles       RolePermission[]
+}
+
+model UserRole {
+  userId      String
+  roleId      String
+  grantedById String?
+  grantedAt   DateTime         @default(now())
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role             @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model RolePermission {
+  roleId        String
+  permissionKey String
+
+  role          Role           @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission    Permission     @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@id([roleId, permissionKey])
+  @@index([roleId])
+  @@index([permissionKey])
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip         String?
+  country    String?
+  userAgent  String?
+  expiresAt  DateTime
+  lastSeenAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model TwoFactor {
+  userId            String   @id
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secretEncrypted   String
+  backupCodeHashes  Json     // array of hashed strings
+  enabledAt         DateTime @default(now())
+}
+
+model Invite {
+  id          String    @id @default(cuid())
+  userId      String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation("InvitesForUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy   User?     @relation("InvitesCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([tokenHash])
+}
+
+model PendingSignup {
+  id           String   @id @default(cuid())
+  email        String
+  stepOneData  Json
+  passwordHash String
+  track        String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([email])
+}
+
+model EmailOtp {
+  id        String   @id @default(cuid())
+  email     String
+  codeHash  String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model EmailBlocklist {
+  normalisedEmail String   @id
+  reason          String
+  sourceUserId    String?
+  createdAt       DateTime @default(now())
+}
+
+// ==========================================
+// 2. APPLICATIONS
+// ==========================================
+
+enum ApplicationTrack {
+  ARTICLE_WRITER
+  RESEARCH_WRITER
+  ROLE_UPGRADE
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  RETURNED
+  PERMANENTLY_REJECTED
+  WITHDRAWN
+}
+
+enum DocumentKind {
+  STUDENT_ID
+  INSTITUTIONAL_ID
+  WRITING_SAMPLE
+  APPLICATION_ATTACHMENT
+}
+
+enum ApplicationDecisionType {
+  APPROVE
+  REJECT_WITH_COMMENTS
+  REJECT_PERMANENTLY
+}
+
+enum PermanentRejectReason {
+  FAKE_OR_MISLEADING_INFO
+  IMPERSONATION
+  PLAGIARISED_SAMPLES
+  ABUSIVE_CONTENT
+  SPAM
+  OTHER
+}
+
+model Application {
+  id            String                @id @default(cuid())
+  userId        String
+  user          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  track         ApplicationTrack
+  status        ApplicationStatus     @default(PENDING)
+  attempt       Int                   @default(1)
+  stepTwoData   Json
+  submitIp      String?
+  submitCountry String?
+  submitCity    String?
+  userAgent     String?
+  submittedAt   DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  documents     ApplicationDocument[]
+  decisions     ApplicationDecision[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model ApplicationDocument {
+  id            String       @id @default(cuid())
+  applicationId String
+  application   Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  kind          DocumentKind
+  privateKey    String
+  purgeAt       DateTime?
+  createdAt     DateTime     @default(now())
+
+  @@index([applicationId])
+}
+
+model ApplicationDecision {
+  id                  String                  @id @default(cuid())
+  applicationId       String
+  application         Application             @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  decision            ApplicationDecisionType
+  commentToApplicant  String?
+  internalNote        String?
+  permanentReason     PermanentRejectReason?
+  decidedById         String?
+  decidedBy           User?                   @relation(fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt           DateTime                @default(now())
+
+  @@index([applicationId])
+}
+
+// ==========================================
+// 3. TAXONOMY & LOCATIONS
+// ==========================================
+
+enum CategoryType {
+  TOPIC
+  SUBTOPIC
+  REPORT_CATEGORY
+  RESEARCH_CATEGORY
+}
+
+model Category {
+  id                     String             @id @default(cuid())
+  type                   CategoryType
+  parentId               String?
+  parent                 Category?          @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children               Category[]         @relation("CategoryHierarchy")
+  name                   String
+  slug                   String
+  description            String?
+  heroImageUrl           String?
+  iconUrl                String?
+  sortOrder              Int                @default(0)
+  active                 Boolean            @default(true)
+  showInNav              Boolean            @default(true)
+  showOnHomeQuickAccess  Boolean            @default(false)
+  showAsHomeDesk         Boolean            @default(false)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  contentItemsTopic      ContentItem[]      @relation("ContentTopic")
+  contentItemsSubtopic   ContentItem[]      @relation("ContentSubtopic")
+  contentItemsSection    ContentItem[]      @relation("ContentSectionCategory")
+  featuredSlotsScoped    FeaturedSlot[]
+
+  @@unique([type, slug])
+  @@index([type])
+  @@index([slug])
+  @@index([parentId])
+}
+
+model Tag {
+  id        String       @id @default(cuid())
+  name      String       @unique
+  slug      String       @unique
+  createdAt DateTime     @default(now())
+
+  content   ContentTag[]
+}
+
+model Region {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+
+  countries Country[]
+}
+
+model Country {
+  id          String               @id @default(cuid())
+  iso2        String               @unique
+  name        String
+  regionId    String
+  region      Region               @relation(fields: [regionId], references: [id], onDelete: Cascade)
+  lat         Float
+  lng         Float
+  createdAt   DateTime             @default(now())
+
+  cities      City[]
+  statusLayer StatusLayerEntry[]
+
+  @@index([regionId])
+}
+
+model City {
+  id            String            @id @default(cuid())
+  countryId     String
+  country       Country           @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  name          String
+  lat           Float
+  lng           Float
+  population    Int?
+  isCountryWide Boolean           @default(false)
+  createdAt     DateTime          @default(now())
+
+  locations     ContentLocation[]
+
+  @@index([countryId])
+}
+
+// ==========================================
+// 4. CONTENT & EDITORIAL CORE
+// ==========================================
+
+enum ContentType {
+  ARTICLE
+  REPORT
+  RESEARCH
+  NEWS
+}
+
+enum ContentLabel {
+  ANALYSIS
+  EXPLAINER
+  OPINION
+  INTERVIEW
+  INVESTIGATION
+  PROFILE
+  BOOK_REVIEW
+  NEWS_ANALYSIS
+  NEWS
+  REPORT
+  RESEARCH_PAPER
+  POLICY_BRIEF
+  ARCHIVE
+  BREAKING
+}
+
+enum ContentStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  SCHEDULED
+  PUBLISHED
+  UNPUBLISHED
+  REJECTED
+  REMOVED_BAN
+  DELETED
+}
+
+model ContentItem {
+  id                String              @id @default(cuid())
+  type              ContentType
+  refId             String              @unique // ART-2026-..., REP-2026-..., RES-2026-...
+  title             String
+  slug              String
+  standfirst        String?
+  label             ContentLabel
+  status            ContentStatus       @default(DRAFT)
+  topicId           String?
+  topic             Category?           @relation("ContentTopic", fields: [topicId], references: [id], onDelete: SetNull)
+  subtopicId        String?
+  subtopic          Category?           @relation("ContentSubtopic", fields: [subtopicId], references: [id], onDelete: SetNull)
+  sectionCategoryId String?
+  sectionCategory   Category?           @relation("ContentSectionCategory", fields: [sectionCategoryId], references: [id], onDelete: SetNull)
+  bodyJson          Json?
+  cardImageUrl      String?
+  coverImageUrl     String?
+  coverCaption      String?
+  coverCredit       String?
+  altText           String?
+  seoTitle          String?
+  seoDescription    String?
+  shareImageUrl     String?
+  migrated          Boolean             @default(false)
+  submitIp          String?
+  submitCountry     String?
+  submittedAt       DateTime?
+  publishedAt       DateTime?
+  scheduledFor      DateTime?
+  readCount         Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  articleDetails    ArticleDetails?
+  reportDetails     ReportDetails?
+  researchDetails   ResearchDetails?
+  newsDetails       NewsDetails?
+  authors           ContentAuthor[]
+  externalCoAuthors ExternalCoAuthor[]
+  versions          ContentVersion[]
+  locations         ContentLocation[]
+  tags              ContentTag[]
+  files             ContentFile[]
+  editorialComments EditorialComment[]
+  corrections       Correction[]
+  updateRequests    UpdateRequest[]
+  reviewAssignments ReviewAssignment[]
+  decisions         EditorialDecision[]
+  featuredPlacements FeaturedPlacement[]
+  readEvents        ReadEvent[]
+  dailyStats        DailyItemStat[]
+
+  @@unique([type, slug])
+  @@index([status])
+  @@index([type])
+  @@index([topicId])
+  @@index([subtopicId])
+  @@index([publishedAt])
+}
+
+model ArticleDetails {
+  contentId    String      @id
+  content      ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  keyTakeaways Json?       // array of strings
+  sources      Json?       // array of { text, url }
+  wordCount    Int         @default(0)
+  readMinutes  Int         @default(1)
+}
+
+model ReportDetails {
+  contentId         String      @id
+  content           ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  reportNumber      String      @unique // PSF-R-YYYY-NNN
+  executiveSummary  String?
+  keyFindings       Json?       // array of strings
+  pdfUrl            String?
+  portraitCoverUrl  String?
+  pages             Int         @default(1)
+}
+
+enum ResearchPaperType {
+  RESEARCH_ARTICLE
+  POLICY_BRIEF
+  REVIEW_ARTICLE
+  CASE_STUDY
+  COMMENTARY
+}
+
+enum ReferenceStyle {
+  APA_7
+  CHICAGO_AUTHOR_DATE
+}
+
+model ResearchDetails {
+  contentId         String             @id
+  content           ContentItem        @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  paperType         ResearchPaperType  @default(RESEARCH_ARTICLE)
+  runningTitle      String?
+  abstract          String
+  keywords          Json               // array of strings
+  fundingStatement  String?
+  coiStatement      String?
+  ethicsStatement   String?
+  dataAvailability  String?
+  referencesText    String?
+  referenceStyle    ReferenceStyle     @default(APA_7)
+  doi               String?
+  volume            String?
+  issue             String?
+  pageRange         String?
+  licence           String             @default("CC BY 4.0")
+  currentRound      Int                @default(1)
+  receivedAt        DateTime?
+  acceptedAt        DateTime?
+}
+
+model NewsDetails {
+  contentId     String      @id
+  content       ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  summaryJson   Json?
+  sourceName    String?
+  sourceUrl     String?
+  breaking      Boolean     @default(false)
+  breakingUntil DateTime?
+  pinned        Boolean     @default(false)
+  expiresAt     DateTime?
+}
+
+model ContentAuthor {
+  contentId    String
+  userId       String
+  position     Int         @default(1)
+  inviteStatus String      @default("ACCEPTED") // ACCEPTED, PENDING, DECLINED
+
+  content      ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([contentId, userId])
+  @@index([contentId])
+  @@index([userId])
+}
+
+model ExternalCoAuthor {
+  id            String      @id @default(cuid())
+  contentId     String
+  content       ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  name          String
+  email         String?
+  institution   String?
+  orcid         String?
+  corresponding Boolean     @default(false)
+
+  @@index([contentId])
+}
+
+model ContentVersion {
+  id          String      @id @default(cuid())
+  contentId   String
+  content     ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  number      Int
+  snapshot    Json
+  createdById String?
+  createdBy   User?       @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  reason      String?
+  createdAt   DateTime    @default(now())
+
+  @@index([contentId])
+}
+
+model ContentLocation {
+  contentId String
+  cityId    String
+  primary   Boolean     @default(false)
+
+  content   ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  city      City        @relation(fields: [cityId], references: [id], onDelete: Cascade)
+
+  @@id([contentId, cityId])
+  @@index([contentId])
+  @@index([cityId])
+}
+
+model ContentTag {
+  contentId String
+  tagId     String
+
+  content   ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  tag       Tag         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contentId, tagId])
+  @@index([contentId])
+  @@index([tagId])
+}
+
+model ContentFile {
+  id         String      @id @default(cuid())
+  contentId  String
+  content    ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  kind       String      // MANUSCRIPT_PDF, TITLE_PAGE, SUPPLEMENTARY, FIGURE, REPORT_PDF
+  storageKey String
+  isPrivate  Boolean     @default(false)
+  version    Int         @default(1)
+  mime       String
+  sizeBytes  Int
+  createdAt  DateTime    @default(now())
+
+  @@index([contentId])
+}
+
+model EditorialComment {
+  id         String      @id @default(cuid())
+  contentId  String
+  content    ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  visibility String      @default("INTERNAL") // INTERNAL, TO_AUTHOR
+  body       String
+  createdAt  DateTime    @default(now())
+
+  @@index([contentId])
+}
+
+model Correction {
+  id          String      @id @default(cuid())
+  contentId   String
+  content     ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  text        String
+  correctedAt DateTime    @default(now())
+  createdById String?
+  createdBy   User?       @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([contentId])
+}
+
+model UpdateRequest {
+  id            String      @id @default(cuid())
+  contentId     String
+  content       ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  requestedById String
+  requestedBy   User        @relation(fields: [requestedById], references: [id], onDelete: Cascade)
+  details       String
+  status        String      @default("PENDING") // PENDING, RESOLVED, DISMISSED
+  createdAt     DateTime    @default(now())
+
+  @@index([contentId])
+}
+
+// ==========================================
+// 5. RESEARCH PEER REVIEW
+// ==========================================
+
+enum ReviewAssignmentStatus {
+  INVITED
+  ACCEPTED
+  DECLINED
+  SUBMITTED
+  OVERDUE
+  EXPIRED
+}
+
+enum ReviewRecommendation {
+  APPROVE
+  MINOR_REVISIONS
+  MAJOR_REVISIONS
+  REJECT
+}
+
+model ReviewAssignment {
+  id            String                 @id @default(cuid())
+  contentId     String
+  content       ContentItem            @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  approverId    String
+  approver      User                   @relation(fields: [approverId], references: [id], onDelete: Cascade)
+  round         Int                    @default(1)
+  status        ReviewAssignmentStatus @default(INVITED)
+  dueAt         DateTime
+  declineReason String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  review        Review?
+
+  @@index([contentId])
+  @@index([approverId])
+}
+
+model Review {
+  id                   String               @id @default(cuid())
+  assignmentId         String               @unique
+  assignment           ReviewAssignment     @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  recommendation       ReviewRecommendation
+  scores               Json                 // { originality, rigour, evidence, clarity, relevance }
+  commentsToAuthor     String
+  confidentialComments String?
+  annotatedFileKey     String?
+  submittedAt          DateTime             @default(now())
+
+  comments             ReviewComment[]
+}
+
+model ReviewComment {
+  id         String   @id @default(cuid())
+  reviewId   String
+  review     Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  anchorText String?
+  sectionRef String?
+  body       String
+  createdAt  DateTime @default(now())
+
+  @@index([reviewId])
+}
+
+model EditorialDecision {
+  id               String      @id @default(cuid())
+  contentId        String
+  content          ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  stage            String      // SCREENING, REVIEW_DECISION, FINAL_APPROVAL
+  decision         String      // APPROVED, REJECTED, REVISIONS_REQUESTED, DESK_REJECTED
+  commentToAuthor  String?
+  internalNote     String?
+  decidedById      String?
+  decidedBy        User?       @relation(fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt        DateTime    @default(now())
+
+  @@index([contentId])
+}
+
+// ==========================================
+// 6. FEATURED & ADS PLACEMENT ENGINES
+// ==========================================
+
+model FeaturedSlot {
+  id              String              @id @default(cuid())
+  key             String              @unique
+  page            String
+  scopeCategoryId String?
+  scopeCategory   Category?           @relation(fields: [scopeCategoryId], references: [id], onDelete: SetNull)
+  positions       Int                 @default(1)
+  allowedTypes    Json                // array of ContentType strings
+  createdAt       DateTime            @default(now())
+
+  placements      FeaturedPlacement[]
+
+  @@index([key])
+}
+
+enum FeaturedPlacementStatus {
+  SCHEDULED
+  ACTIVE
+  HOLDING
+  ENDED
+  CANCELLED
+}
+
+model FeaturedPlacement {
+  id          String                  @id @default(cuid())
+  slotId      String
+  slot        FeaturedSlot            @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  position    Int                     @default(1)
+  contentId   String
+  content     ContentItem             @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  startsAt    DateTime
+  endsAt      DateTime?
+  status      FeaturedPlacementStatus @default(SCHEDULED)
+  createdById String?
+  createdBy   User?                   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  @@index([slotId, position])
+  @@index([contentId])
+  @@index([status])
+}
+
+model AdSlot {
+  key         String              @id
+  page        String
+  desktopSize String
+  mobileSize  String
+  maxSlides   Int                 @default(1)
+  maxBytes    Int                 @default(307200) // 300KB
+  createdAt   DateTime            @default(now())
+
+  placements  CampaignPlacement[]
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  LIVE
+  PAUSED
+  ENDED
+  ARCHIVED
+}
+
+model Campaign {
+  id             String              @id @default(cuid())
+  campaignNumber String              @unique // CMP-YYYY-NNNN
+  brandName      String
+  name           String
+  description    String?
+  contactName    String?
+  contactEmail   String?
+  manualStatus   CampaignStatus      @default(DRAFT)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  placements     CampaignPlacement[]
+}
+
+model CampaignPlacement {
+  id         String         @id @default(cuid())
+  campaignId String
+  campaign   Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  slotKey    String
+  slot       AdSlot         @relation(fields: [slotKey], references: [key], onDelete: Cascade)
+  startsAt   DateTime
+  endsAt     DateTime
+  paused     Boolean        @default(false)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  creatives  AdCreative[]
+  dailyStats AdStatDaily[]
+
+  @@index([campaignId])
+  @@index([slotKey])
+}
+
+model AdCreative {
+  id          String            @id @default(cuid())
+  placementId String
+  placement   CampaignPlacement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+  slideOrder  Int               @default(1)
+  desktopUrl  String
+  mobileUrl   String
+  altText     String
+  clickUrl    String?
+  createdAt   DateTime          @default(now())
+
+  @@index([placementId])
+}
+
+model AdStatDaily {
+  id            String            @id @default(cuid())
+  placementId   String
+  placement     CampaignPlacement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+  day           DateTime          @db.Date
+  impressions   Int               @default(0)
+  uniqueViewers Int               @default(0)
+  clicks        Int               @default(0)
+  byCountry     Json?             // { PK: 120, US: 45 }
+  byDevice      Json?             // { desktop: 140, mobile: 25 }
+
+  @@unique([placementId, day])
+  @@index([placementId])
+}
+
+// ==========================================
+// 7. GLOBAL WATCH & INBOX
+// ==========================================
+
+enum StatusLayerLevel {
+  ACTIVE_CONFLICT
+  HIGH_TENSION
+  WATCH
+}
+
+model StatusLayerEntry {
+  id        String           @id @default(cuid())
+  countryId String
+  country   Country          @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  areaName  String?
+  status    StatusLayerLevel
+  note      String
+  startsOn  DateTime         @db.Date
+  reviewBy  DateTime         @db.Date
+  endedOn   DateTime?        @db.Date
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@index([countryId])
+}
+
+enum InboxSource {
+  CONTACT
+  CORRECTIONS
+  ADVERTISE
+  COPYRIGHT
+}
+
+enum InboxStatus {
+  NEW
+  OPEN
+  REPLIED
+  CLOSED
+  SPAM
+}
+
+model InboxMessage {
+  id           String        @id @default(cuid())
+  source       InboxSource
+  pageUrl      String?
+  fields       Json          // Form submission payload
+  status       InboxStatus   @default(NEW)
+  assignedToId String?
+  ip           String?
+  country      String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  notes        InboxNote[]
+  replies      InboxReply[]
+
+  @@index([source])
+  @@index([status])
+}
+
+model InboxNote {
+  id        String       @id @default(cuid())
+  messageId String
+  message   InboxMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime     @default(now())
+
+  @@index([messageId])
+}
+
+model InboxReply {
+  id        String       @id @default(cuid())
+  messageId String
+  message   InboxMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  sentById  String
+  sentBy    User         @relation(fields: [sentById], references: [id], onDelete: Cascade)
+  subject   String
+  body      String
+  createdAt DateTime     @default(now())
+
+  @@index([messageId])
+}
+
+// ==========================================
+// 8. ID CARDS & CMS
+// ==========================================
+
+model IdCard {
+  id            String              @id @default(cuid())
+  cardId        String              @unique
+  designation   String
+  tokenHash     String              @unique
+  active        Boolean             @default(true)
+  scanCount     Int                 @default(0)
+  lastScannedAt DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  dailyScans    IdCardScanDaily[]
+
+  @@index([tokenHash])
+}
+
+model IdCardScanDaily {
+  id     String   @id @default(cuid())
+  cardId String
+  card   IdCard   @relation(fields: [cardId], references: [cardId], onDelete: Cascade)
+  day    DateTime @db.Date
+  scans  Int      @default(1)
+
+  @@unique([cardId, day])
+}
+
+model CmsPage {
+  key            String        @id // home, about, editorial-policy, etc.
+  title          String
+  status         String        @default("PUBLISHED") // DRAFT_PENDING, PUBLISHED
+  seoTitle       String?
+  seoDescription String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  sections       CmsSection[]
+  revisions      CmsRevision[]
+}
+
+model CmsSection {
+  id            String   @id @default(cuid())
+  pageKey       String
+  page          CmsPage  @relation(fields: [pageKey], references: [key], onDelete: Cascade)
+  sectionKey    String
+  publishedData Json?
+  draftData     Json?
+  hidden        Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+
+  @@unique([pageKey, sectionKey])
+  @@index([pageKey])
+}
+
+model CmsRevision {
+  id            String   @id @default(cuid())
+  pageKey       String
+  page          CmsPage  @relation(fields: [pageKey], references: [key], onDelete: Cascade)
+  snapshot      Json
+  publishedById String?
+  publishedBy   User?    @relation(fields: [publishedById], references: [id], onDelete: SetNull)
+  publishedAt   DateTime @default(now())
+
+  @@index([pageKey])
+}
+
+// ==========================================
+// 9. ANALYTICS, NOTIFICATIONS & AUDIT LOGS
+// ==========================================
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  payload   Json
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+enum ActorType {
+  USER
+  VISITOR
+  SYSTEM
+}
+
+enum ActionResult {
+  SUCCESS
+  FAILED
+}
+
+model ActivityLog {
+  id          BigInt       @id @default(autoincrement())
+  occurredAt  DateTime     @default(now())
+  actorId     String?
+  actor       User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorType   ActorType    @default(USER)
+  actorRoles  Json?        // Array of role names at time of event
+  action      String       // Human-readable: "Approved article", etc.
+  targetType  String?      // Article, User, Campaign, etc.
+  targetId    String?
+  targetLabel String?
+  url         String?
+  ip          String?
+  country     String?
+  city        String?
+  userAgent   String?
+  result      ActionResult @default(SUCCESS)
+  metadata    Json?        // Before & after diffs, comments, reasons
+
+  @@index([occurredAt])
+  @@index([actorId])
+  @@index([action])
+}
+
+model ReadEvent {
+  id          BigInt      @id @default(autoincrement())
+  contentId   String
+  content     ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  ip          String?
+  country     String?
+  city        String?
+  device      String?
+  occurredAt  DateTime    @default(now())
+
+  @@index([contentId, occurredAt])
+}
+
+model DailyItemStat {
+  id             String      @id @default(cuid())
+  contentId      String
+  content        ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  day            DateTime    @db.Date
+  reads          Int         @default(0)
+  pdfDownloads   Int         @default(0)
+  shares         Int         @default(0)
+  avgReadSeconds Int         @default(0)
+
+  @@unique([contentId, day])
+  @@index([contentId])
+}

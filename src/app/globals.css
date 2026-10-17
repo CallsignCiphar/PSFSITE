@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --paper: #FFFFFF;
+  --ivory-50: #FBF9F4;
+  --ivory-100: #F5F1E8;
+  --ivory-200: #E9E3D5;
+  --line: #E4E2DC;
+
+  --ink-900: #14171A;
+  --ink-700: #2E3338;
+  --ink-500: #5A6169;
+  --ink-400: #7A8189;
+
+  --green-900: #022C15;
+  --green-800: #03361A;
+  --green-700: #04411F;
+  --green-600: #0D6634;
+  --green-500: #198348;
+  --green-200: #BBD3C5;
+  --green-100: #DCE5E0;
+  --green-50: #F2F5F3;
+
+  --danger-700: #A4231A;
+  --danger-50: #FBEDEB;
+  --warning-700: #9A4A0B;
+  --warning-50: #FBF1E6;
+  --info-700: #1F4A7A;
+  --info-50: #EAF1F8;
+  --success-700: #0D6634;
+
+  --logo-gold: #D9A52B;
+}
+
+body {
+  background-color: var(--paper);
+  color: var(--ink-900);
+  font-family: var(--font-inter), system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Institutional Newspaper / Think Tank Section Separator Rule */
+.section-rule {
+  border-top: 2px solid var(--ink-900);
+  margin-bottom: 1.25rem;
+}
+
+.sub-rule {
+  border-top: 1px solid var(--line);
+}
+
+/* Focus styles meeting WCAG 2.1 AA */
+:focus-visible {
+  outline: 2px solid var(--green-500);
+  outline-offset: 2px;
+}
